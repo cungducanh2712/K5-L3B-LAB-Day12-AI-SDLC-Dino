@@ -26,4 +26,5 @@
 - Sáng tạo thêm được khuyến khích nhưng phải tắt ở headless (xem README, mục "Tự do sáng tạo").
 
 ## Skills / hooks của nhóm
-- (Ghi tên và khi nào dùng; tối thiểu 2 skill/hook/command nhóm tự viết, đặt ở `.agents/skills/` hoặc tương đương.)
+- `.agents/skills/verify-phase`: Tự động chạy toàn bộ unit tests và kiểm tra team constraint trước mỗi lần commit/tag phase.
+- `.agents/skills/smoke-test`: Chạy smoke test tích hợp 2 tiến trình độc lập Buổi sáng (Gather) -> Buổi tối (Quán) và xuất bằng chứng vào `docs/proof/`.
