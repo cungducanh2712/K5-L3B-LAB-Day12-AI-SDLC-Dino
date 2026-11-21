@@ -15,7 +15,7 @@ Hai chế độ của contract v1.0: `gather` (buổi sáng: lặn và hái, nh�
 ## Chơi thử trực tiếp trên trình duyệt (không cần cài gì)
 
 ```bash
-python3 -m chonoi.live --mode gather      # hoặc: --mode quan   [--seed N] [--port 8000]
+python3 -m chonoi.live --mode gather      # hoặc: --mode quan / day --days 5   [--seed N] [--port 8000]
 ```
 
 Lệnh in một địa chỉ (mặc định `http://127.0.0.1:8000/`); mở nó bằng trình duyệt. Phím: **WASD / mũi tên** di chuyển, **E** (`interact`), **Space** (`catch`), **R** chơi lại. Cửa sổ chạy **cùng một lớp sim** với headless (60 tick/s) và chỉ **đọc snapshot**, nên nhóm viết luật tới đâu thì thanh oxy, Máu, giỏ, cá, nút hái... hiện tới đó (trường chưa có sẽ bị bỏ qua). Đây chỉ là hình khối tạm để thử luật; đồ họa thật do nhóm làm. Chơi `gather` rồi chuyển sang `quan`: thêm `--inventory-out kho.json` ở lệnh đầu và `--inventory kho.json` ở lệnh sau. File chỉ dùng thư viện chuẩn Python (`chonoi/live.py`, `chonoi/web/index.html`); đổi ngôn ngữ thì xóa hoặc thay bằng cửa sổ của nhóm.
