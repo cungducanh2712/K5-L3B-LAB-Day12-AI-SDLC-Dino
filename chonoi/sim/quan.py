@@ -19,10 +19,11 @@ class QuanSim:
     mode = "quan"
     phase = "quan"
 
-    def __init__(self, tuning, scenario, streams, ids, inventory=None):
+    def __init__(self, tuning, scenario, streams, ids, inventory=None, allowed_dishes=None):
         t = tuning["quan"]
         self.t = t
         self.menu = tuning["menu"]
+        self.allowed_dishes = allowed_dishes
         self.rng = streams
         self.ids = ids
         p = scenario.get("player", {})
@@ -302,7 +303,7 @@ class QuanSim:
                     for c in self.customers:
                         for k, q in c.get("reserved", {}).items():
                             avail[k] = avail.get(k, 0) - q
-                    menu_ids = sorted(self.menu.keys())
+                    menu_ids = sorted(self.allowed_dishes if self.allowed_dishes is not None else self.menu.keys())
                     affordable = [
                         m_id for m_id in menu_ids
                         if all(avail.get(k, 0) >= q for k, q in self.menu[m_id]["recipe"].items())
