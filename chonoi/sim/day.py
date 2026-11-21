@@ -1,4 +1,4 @@
-"""Vòng ngày (mode `day`) — Contract v1.1.
+"""Vòng ngày (mode `day`) — Contract v1.2.
 
 Flow:
   DayIntro -> gather -> EveningIntro -> quan -> DayResult -> Shop -> DayIntro (cho tới khi hết số ngày).
@@ -7,6 +7,7 @@ Flow:
 import copy
 import math
 
+from ..ids import sort_by_id
 from .gather import GatherSim
 from .quan import QuanSim
 
@@ -43,7 +44,7 @@ class DaySim:
         self.gather_sim = None
         self.quan_sim = None
         self.shop_time_left = 0
-        self.stock_surplus = {}
+        self.stock_surplus = []
 
         self.done = False
         self.reason = None
@@ -103,7 +104,10 @@ class DaySim:
             snap.update(s)
             snap["time_left_ticks"] = self.quan_sim.time_left_ticks
         elif self.phase == "shop":
-            snap["stock"] = {k: self.stock_surplus[k] for k in sorted(self.stock_surplus) if self.stock_surplus[k] > 0}
+            snap["stock"] = [
+                {"id": it["id"], "kind": it["kind"], "fresh": round(float(it["fresh"]), 4)}
+                for it in sort_by_id(self.stock_surplus)
+            ]
             snap["time_left_ticks"] = self.shop_time_left
         return snap
 
@@ -121,6 +125,7 @@ class DaySim:
                 events.append(("phase_start", {}))
                 sc_quan = dict(self.scenario.get("quan", {}))
                 plan = self.current_plan
+                # Kho quán nhận trọn số lượng và độ tươi từ giỏ
                 self.quan_sim = QuanSim(self.tuning, sc_quan, self.rng, self.ids,
                                         inventory=catch, allowed_dishes=plan["dishes"])
                 self.quan_sim.money = self.money
@@ -134,7 +139,7 @@ class DaySim:
                 self.money = self.quan_sim.money
                 self.earned = self.quan_sim.earned
                 self.reputation = self.quan_sim.reputation
-                self.stock_surplus = dict(self.quan_sim.stock)
+                self.stock_surplus = list(self.quan_sim.stock)
                 self.phase = "shop"
                 self.phase_tick = 0
                 self.shop_time_left = self.tuning["shop"]["max_ticks"]
