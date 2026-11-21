@@ -63,17 +63,18 @@ class TestGatherSim(unittest.TestCase):
             self.assertEqual(len(faint_evs), 1)
             self.assertEqual(faint_evs[0]["data"]["cause"], "choke")
             # Thứ tự nhặt: ca_loc, bong_sung, ca_linh -> LIFO mất theo thứ tự: ca_linh, bong_sung, ca_loc
-            self.assertEqual(faint_evs[0]["data"]["lost"], ["ca_linh", "bong_sung", "ca_loc"])
+            lost_kinds = [it["kind"] if isinstance(it, dict) else it for it in faint_evs[0]["data"]["lost"]]
+            self.assertEqual(lost_kinds, ["ca_linh", "bong_sung", "ca_loc"])
             self.assertEqual(faint_evs[0]["data"]["hp"], 0)
 
             end_evs = events(rows, "gather_end")
             self.assertEqual(len(end_evs), 1)
             self.assertEqual(end_evs[0]["data"]["reason"], "fainted")
-            self.assertEqual(end_evs[0]["data"]["inventory"], {"items": {}})
+            self.assertEqual(end_evs[0]["data"]["inventory"], {"items": []})
 
             # File kho phải rỗng
             with open(inv, encoding="utf-8") as f:
-                self.assertEqual(json.load(f), {"items": {}})
+                self.assertEqual(json.load(f), {"items": []})
 
     def test_surface_refill_oxygen(self):
         """Ở mặt nước (d <= 0.5), oxy hồi 6 tick/tick."""
@@ -154,7 +155,9 @@ class TestGatherSim(unittest.TestCase):
             # Đàn cá đã bị xóa khỏi snapshot cuối
             last_snap = snapshots(rows)[-1]
             self.assertEqual(len(last_snap["fish"]), 0)
-            self.assertEqual(last_snap["hold"], ["ca_linh", "ca_linh", "ca_linh"])
+            # Cá linh bắt đầu ở tick 2 sau cooldown hoặc tương đương: hold có 3 cá thể ca_linh
+        self.assertEqual(len(last_snap["hold"]), 3)
+        self.assertTrue(all(it["kind"] == "ca_linh" for it in last_snap["hold"]))
 
 
 if __name__ == "__main__":

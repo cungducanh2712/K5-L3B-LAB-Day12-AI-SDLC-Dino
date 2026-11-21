@@ -4,8 +4,8 @@
 
 | Thành viên | GitHub handle | Module chính | Vai quy trình | Người dự phòng cho |
 |---|---|---|---|---|
-| Cung Đức Anh (Ca 1 - làm trước) | `cungducanh2712` | `sim/gather`, `sim/quan`, `day loop` (Phase 1, 2) | PO, Integrator (tag phase-1, 2) | Thành viên 2 |
-| Thành viên 2 (Ca 2 - làm sau) | *(điền handle)* | `client/ui`, mở rộng tính năng, QA (Phase 3, 4) | QA lead, Release (tag phase-3, 4) | Cung Đức Anh |
+| Cung Đức Anh (Ca 1 - làm trước) | `cungducanh2712` | `sim/gather`, `sim/quan`, `day loop` (Phase 1, 2) | PO, Integrator (tag phase-1, 2) | Nguyễn Ngọc Bách |
+| Nguyễn Ngọc Bách (Ca 2 - làm sau) | `bachnguyen` | `sim/gather`, `sim/quan`, `inventory`, `bench/soak`, QA (Phase 3, 4) | QA lead, Release (tag phase-3, 4) | Cung Đức Anh |
 
 **Vai quy trình:** PO (đầu mối hỏi giảng viên, giữ `docs/clarify.md`) · Integrator (giữ `docs/contracts/`, gắn tag) · QA lead · Scrum/Release. Có thể kiêm.
 

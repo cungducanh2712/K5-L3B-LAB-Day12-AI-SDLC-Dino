@@ -26,8 +26,8 @@ class TestPhase2(unittest.TestCase):
             self.assertEqual(len(hits), 1)
             self.assertEqual(hits[0]["data"]["monster_id"], "M1")
             self.assertEqual(hits[0]["data"]["hp"], 2)
-            # Rơi floor(4/2) = 2 con: bong_sung, ca_keo (LIFO)
-            self.assertEqual(hits[0]["data"]["lost"], ["bong_sung", "ca_keo"])
+            lost_kinds = [it["kind"] if isinstance(it, dict) else it for it in hits[0]["data"]["lost"]]
+            self.assertEqual(lost_kinds, ["bong_sung", "ca_keo"])
 
     def test_fish_swimming_and_turning(self):
         """Đàn cá bơi và phản xạ mép x ∈ [4, 96]."""

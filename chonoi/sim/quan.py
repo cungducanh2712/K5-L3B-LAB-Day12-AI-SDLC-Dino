@@ -1,10 +1,14 @@
-"""Buổi tối — Mở Quán.
+"""Buổi tối — Mở Quán (`quan`) v1.2.
 
-PRD-0 mục F, Quán:
-  Lát 3: khách đến theo lịch, chọn món nấu được, giữ chỗ nguyên liệu, kiên nhẫn,
-         bỏ đi (customer_left), no_dish, vòng đời khách.
-  Lát 4: interact tại bếp/bàn (cook_started, dish_ready, dish_picked, served),
-         ăn xong trả tiền (paid), boa, uy tín, hết ca (quan_end).
+Contract v1.2:
+  - Kho cá thể: stock là danh sách [{id, kind, fresh}].
+  - Hao tươi: kho quán giảm 0.25/s (0.25/60 mỗi tick), kẹp đáy 0.
+  - Ươn: fresh < 30, phát `spoiled` theo thứ tự id.
+  - Giữ chỗ theo cá thể: lấy các cá thể khả dụng tươi nhất (fresh cao nhất, hòa theo id).
+  - Giữ lại khi ươn: nếu cá thể đang giữ bị ươn, nhả toàn bộ đơn và thử giữ lại đúng một lần.
+    Xử lý các đơn bị ảnh hưởng theo order_tick rồi id bàn.
+  - Giá động: base_price = floor(giá niêm yết * trung bình fresh của các cá thể dùng / 100).
+    Tip tính floor(base_price * 0.2) trên giá đã chốt.
 """
 
 import math
@@ -22,6 +26,7 @@ class QuanSim:
     def __init__(self, tuning, scenario, streams, ids, inventory=None, allowed_dishes=None):
         t = tuning["quan"]
         self.t = t
+        self.tuning = tuning
         self.menu = tuning["menu"]
         self.allowed_dishes = allowed_dishes
         self.rng = streams
@@ -31,8 +36,38 @@ class QuanSim:
         self.vel = [float(c) for c in p.get("vel", [0.0, 0.0])]
         self._tgt = None
         self._ramp_left = 0
-        # kho: --inventory HOẶC scenario.stock (cả hai -> cli đã báo mã 2)
-        self.stock = dict(inventory if inventory is not None else scenario.get("stock", {}))
+
+        # Cấu hình độ tươi
+        fness = tuning.get("freshness", {})
+        self.initial_fresh = float(fness.get("initial", 100))
+        self.decay_per_tick = float(fness.get("quan_decay_per_s", 0.25)) / TICK
+        self.spoiled_threshold = float(fness.get("spoiled_below", 30))
+
+        # Kho quán: list các dict {id, kind, fresh, spoiled_emitted}
+        raw_stock = inventory if inventory is not None else scenario.get("stock", [])
+        self.stock = []
+        if isinstance(raw_stock, list):
+            for it in raw_stock:
+                iid = it.get("id") or self.ids.new("I")
+                self.ids.reserve(iid)
+                fresh_val = float(it.get("fresh", self.initial_fresh))
+                self.stock.append({
+                    "id": iid,
+                    "kind": it["kind"],
+                    "fresh": fresh_val,
+                    "spoiled_emitted": fresh_val < self.spoiled_threshold
+                })
+        elif isinstance(raw_stock, dict):
+            for k, count in raw_stock.items():
+                for _ in range(count):
+                    iid = self.ids.new("I")
+                    self.stock.append({
+                        "id": iid,
+                        "kind": k,
+                        "fresh": self.initial_fresh,
+                        "spoiled_emitted": False
+                    })
+
         self.hand = scenario.get("hand")
         self.time_left_ticks = scenario.get("time_left_ticks", int(round(t["duration_s"] * 60)))
         self.reputation = scenario.get("reputation", t["reputation_initial"])
@@ -42,7 +77,8 @@ class QuanSim:
                             cook_ticks_left=s.get("cook_ticks_left", 0), ready_ticks=s.get("ready_ticks", 0))
                        for s in self._merge(t["stoves"], scenario.get("stoves", []))]
         self.tables = self._merge(t["tables"], scenario.get("tables", []))
-        
+
+        # Khách
         self.customers = []
         for c in scenario.get("customers", []):
             item = dict(c)
@@ -55,10 +91,20 @@ class QuanSim:
             item.setdefault("eat_ticks_left", int(round(t["eat_s"] * TICK)) if item.get("state") == "eating" else 0)
             item.setdefault("base_price", price)
             item.setdefault("tip", 0)
-            if item["order_status"] == "reserved" and "reserved" not in item:
-                item["reserved"] = dict(self.menu[dish_id]["recipe"])
+            
+            # Reserved cá thể (mảng item_id)
+            if item["order_status"] == "reserved":
+                if "reserved" not in item:
+                    # Tự động gán cá thể khả dụng tươi nhất
+                    recipe = self.menu[dish_id]["recipe"]
+                    reserved_ids = self._try_reserve_items(recipe)
+                    item["reserved"] = reserved_ids if reserved_ids is not None else []
+                elif isinstance(item["reserved"], dict):
+                    # Chuyển đổi từ dict sang list id
+                    reserved_ids = self._try_reserve_items(item["reserved"])
+                    item["reserved"] = reserved_ids if reserved_ids is not None else []
             else:
-                item.setdefault("reserved", {})
+                item.setdefault("reserved", [])
             self.customers.append(item)
             ids.reserve(item["id"])
 
@@ -67,6 +113,37 @@ class QuanSim:
         self.shift_earned = 0
         self.done = False
         self.reason = None
+
+    def _get_item_by_id(self, item_id):
+        for it in self.stock:
+            if it["id"] == item_id:
+                return it
+        return None
+
+    def _available_stock_items(self):
+        """Các cá thể chưa ươn và chưa bị đơn nào giữ chỗ."""
+        reserved_set = set()
+        for c in self.customers:
+            for iid in c.get("reserved", []):
+                reserved_set.add(iid)
+        return [
+            it for it in self.stock
+            if it["id"] not in reserved_set and it["fresh"] >= self.spoiled_threshold
+        ]
+
+    def _try_reserve_items(self, recipe):
+        """Tìm cá thể tươi nhất cho recipe. Trả về list item_id hoặc None nếu thiếu."""
+        avail = self._available_stock_items()
+        chosen = []
+        for kind, req_qty in recipe.items():
+            kind_items = [it for it in avail if it["kind"] == kind and it["id"] not in chosen]
+            if len(kind_items) < req_qty:
+                return None
+            # Sắp theo fresh giảm dần, hòa theo id tăng dần
+            kind_items.sort(key=lambda it: (-it["fresh"], id_key(it["id"])))
+            for i in range(req_qty):
+                chosen.append(kind_items[i]["id"])
+        return chosen
 
     @staticmethod
     def _merge(defaults, updates):
@@ -82,13 +159,31 @@ class QuanSim:
         occupied = {c["table_id"]: c["id"] for c in self.customers}
         return {
             "player": {"pos": self.pos},
-            "stock": {k: self.stock[k] for k in sorted(self.stock) if self.stock[k] > 0},
+            "stock": [
+                {"id": it["id"], "kind": it["kind"], "fresh": round(float(it["fresh"]), 4)}
+                for it in sort_by_id(self.stock)
+            ],
             "hand": self.hand,
             "stoves": [{k: s.get(k) for k in ("id", "pos", "state", "dish", "cook_ticks_left", "ready_ticks")}
                        for s in sort_by_id(self.stoves)],
             "tables": [{"id": tb["id"], "pos": tb["pos"], "customer_id": occupied.get(tb["id"])}
                        for tb in sort_by_id(self.tables)],
-            "customers": sort_by_id(self.customers),
+            "customers": [
+                {
+                    "id": c["id"],
+                    "table_id": c["table_id"],
+                    "dish_id": c["dish_id"],
+                    "order_tick": c.get("order_tick", 0),
+                    "state": c.get("state", "waiting"),
+                    "patience_ticks_left": c.get("patience_ticks_left", 0),
+                    "eat_ticks_left": c.get("eat_ticks_left", 0),
+                    "order_status": c.get("order_status", "reserved"),
+                    "reserved": list(c.get("reserved", [])),
+                    "base_price": c.get("base_price", self.menu[c["dish_id"]]["price"]),
+                    "tip": c.get("tip", 0),
+                }
+                for c in sort_by_id(self.customers)
+            ],
         }
 
     def step(self, inp):
@@ -96,7 +191,7 @@ class QuanSim:
         self.phase_tick += 1
         self.time_left_ticks = max(0, self.time_left_ticks - 1)
 
-        # 1. Bếp và khách cập nhật timer đầu bước
+        # 1. Đồng hồ và timer -> hao tươi kho thô, phát hết spoiled theo id
         for s in sort_by_id(self.stoves):
             if s["state"] == "ready":
                 s["ready_ticks"] += 1
@@ -116,6 +211,50 @@ class QuanSim:
                 c["eat_ticks_left"] -= 1
             elif c["state"] == "waiting":
                 c["patience_ticks_left"] -= 1
+
+        # Hao tươi kho quán
+        spoiled_items = []
+        for it in self.stock:
+            it["fresh"] = max(0.0, it["fresh"] - self.decay_per_tick)
+            if not it.get("spoiled_emitted", False) and it["fresh"] < self.spoiled_threshold:
+                it["spoiled_emitted"] = True
+                spoiled_items.append(it)
+
+        if spoiled_items:
+            for it in sort_by_id(spoiled_items):
+                events.append(("spoiled", {
+                    "item_id": it["id"],
+                    "kind": it["kind"],
+                    "location": "stock"
+                }))
+
+        # Xử lý giữ chỗ bị ươn (Re-reserve logic)
+        affected_customers = []
+        for c in self.customers:
+            if c.get("order_status") == "reserved" and c.get("reserved"):
+                # Kiểm tra xem có cá thể nào trong reserved bị ươn (<30) không
+                has_spoiled = any(
+                    (self._get_item_by_id(iid) and self._get_item_by_id(iid)["fresh"] < self.spoiled_threshold)
+                    for iid in c["reserved"]
+                )
+                if has_spoiled:
+                    affected_customers.append(c)
+
+        if affected_customers:
+            # Sắp theo order_tick rồi id bàn
+            affected_customers.sort(key=lambda c: (c.get("order_tick", 0), id_key(c["table_id"])))
+            # Nhả toàn bộ reserved của các đơn bị ảnh hưởng trước
+            for c in affected_customers:
+                c["reserved"] = []
+
+            # Thử giữ lại đúng một lần
+            for c in affected_customers:
+                recipe = self.menu[c["dish_id"]]["recipe"]
+                new_reserved = self._try_reserve_items(recipe)
+                if new_reserved:
+                    c["reserved"] = new_reserved
+                else:
+                    c["order_status"] = "unfulfillable"
 
         # 2. Di chuyển
         self._move(inp)
@@ -141,15 +280,25 @@ class QuanSim:
                     s = target
                     if s["state"] == "idle":
                         # Đơn reserved cũ nhất theo order_tick rồi id bàn
-                        res_custs = [c for c in self.customers if c["order_status"] == "reserved"]
+                        res_custs = [c for c in self.customers if c.get("order_status") == "reserved" and c.get("reserved")]
                         if res_custs:
-                            res_custs.sort(key=lambda c: (c["order_tick"], id_key(c["table_id"])))
+                            res_custs.sort(key=lambda c: (c.get("order_tick", 0), id_key(c["table_id"])))
                             target_c = res_custs[0]
-                            recipe = self.menu[target_c["dish_id"]]["recipe"]
-                            for k, q in recipe.items():
-                                self.stock[k] = self.stock.get(k, 0) - q
-                            target_c["reserved"] = {}
+                            reserved_ids = list(target_c["reserved"])
+                            
+                            # Tiêu đúng các id đang giữ
+                            consumed_items = [self._get_item_by_id(iid) for iid in reserved_ids]
+                            self.stock = [it for it in self.stock if it["id"] not in reserved_ids]
+
+                            # Chốt giá theo tươi: floor(giá niêm yết * avg(fresh) / 100)
+                            list_price = self.menu[target_c["dish_id"]]["price"]
+                            avg_fresh = sum(it["fresh"] for it in consumed_items) / len(consumed_items) if consumed_items else 100.0
+                            chapped_price = int(math.floor(list_price * avg_fresh / 100.0))
+
+                            target_c["reserved"] = []
                             target_c["order_status"] = "assigned"
+                            target_c["base_price"] = chapped_price
+
                             s["state"] = "cooking"
                             cook_ticks = int(round(self.menu[target_c["dish_id"]]["cook_s"] * TICK))
                             s["cook_ticks_left"] = cook_ticks
@@ -157,18 +306,21 @@ class QuanSim:
                             s["dish"] = {
                                 "order_id": target_c["id"],
                                 "dish_id": target_c["dish_id"],
-                                "base_price": target_c["base_price"],
+                                "base_price": chapped_price,
                             }
-                            items_list = []
-                            for k in sorted(recipe.keys()):
-                                items_list.extend([k] * recipe[k])
+                            # Sắp theo kind rồi id
+                            sorted_consumed = sorted(consumed_items, key=lambda it: (it["kind"], id_key(it["id"])))
                             events.append(("cook_started", {
                                 "stove_id": s["id"],
                                 "order_id": target_c["id"],
                                 "dish_id": target_c["dish_id"],
-                                "items": items_list,
-                                "base_price": target_c["base_price"],
+                                "items": [
+                                    {"id": it["id"], "kind": it["kind"], "fresh": round(float(it["fresh"]), 4)}
+                                    for it in sorted_consumed
+                                ],
+                                "base_price": chapped_price,
                             }))
+
                     elif s["state"] == "ready":
                         if self.hand is None:
                             self.hand = s["dish"]
@@ -298,15 +450,12 @@ class QuanSim:
                 if empty_tables:
                     empty_tables.sort(key=lambda tb: id_key(tb["id"]))
                     target_table = empty_tables[0]
-                    # Tính tồn kho khả dụng (tồn vật lý trừ phần giữ)
-                    avail = dict(self.stock)
-                    for c in self.customers:
-                        for k, q in c.get("reserved", {}).items():
-                            avail[k] = avail.get(k, 0) - q
+
+                    # Món nấu được với kho chưa ươn và khả dụng
                     menu_ids = sorted(self.allowed_dishes if self.allowed_dishes is not None else self.menu.keys())
                     affordable = [
                         m_id for m_id in menu_ids
-                        if all(avail.get(k, 0) >= q for k, q in self.menu[m_id]["recipe"].items())
+                        if self._try_reserve_items(self.menu[m_id]["recipe"]) is not None
                     ]
                     if not affordable:
                         events.append(("no_dish", {}))
@@ -314,6 +463,7 @@ class QuanSim:
                         chosen_dish = self.rng.get("customer").choice(affordable)
                         cust_id = self.ids.new("C")
                         recipe = self.menu[chosen_dish]["recipe"]
+                        reserved_ids = self._try_reserve_items(recipe)
                         price = self.menu[chosen_dish]["price"]
                         patience_ticks = int(round(self.t["patience_s"] * TICK))
                         new_cust = {
@@ -325,7 +475,7 @@ class QuanSim:
                             "patience_ticks_left": patience_ticks,
                             "eat_ticks_left": 0,
                             "order_status": "reserved",
-                            "reserved": dict(recipe),
+                            "reserved": list(reserved_ids),
                             "base_price": price,
                             "tip": 0,
                         }
